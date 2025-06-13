@@ -53,11 +53,19 @@ var game0cases = [][]gameCase{
 	},
 }
 
+func handleCommand(commands []gameCase) []string {
+	result := []string{}
+	for _, c := range commands {
+		result = append(result, c.command)
+	}
+	return result
+}
+
 func TestGame0(t *testing.T) {
 	for caseNum, commands := range game0cases {
-		initGame()
-		for _, item := range commands {
-			answer := handleCommand(item.command)
+		result := initGame(handleCommand(commands))
+		for i, item := range commands {
+			answer := result[i]
 			if answer != item.answer {
 				t.Error("case:", caseNum, item.step,
 					"\n\tcmd:", item.command,
