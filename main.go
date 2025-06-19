@@ -19,7 +19,7 @@ type GoCommand struct{}
 
 func (c GoCommand) Execute(args []string, p *player, locations *[]location) string {
 	if len(args) < 1 {
-		return "уточните направление"
+		return WhatDirection
 	}
 	return p.move(args[0], locations)
 }
@@ -28,7 +28,7 @@ type TakeCommand struct{}
 
 func (c TakeCommand) Execute(args []string, p *player, locations *[]location) string {
 	if len(args) < 1 {
-		return "уточните предмет"
+		return WhatItem
 	}
 	return p.takeItem(args[0], locations)
 }
@@ -37,7 +37,7 @@ type UseCommand struct{}
 
 func (c UseCommand) Execute(args []string, p *player, locations *[]location) string {
 	if len(args) < 2 {
-		return "уточните, что и к чему применить"
+		return WhatToUse
 	}
 	itemName := args[0]
 	target := strings.Join(args[1:], " ")
@@ -51,11 +51,11 @@ type CommandDispatcher struct {
 func NewDispatcher() *CommandDispatcher {
 	return &CommandDispatcher{
 		commands: map[string]Command{
-			"осмотреться": LookCommand{},
-			"идти":        GoCommand{},
-			"взять":       TakeCommand{},
-			"применить":   UseCommand{},
-			"надеть":      WearCommand{},
+			Look: LookCommand{},
+			Go:   GoCommand{},
+			Take: TakeCommand{},
+			Use:  UseCommand{},
+			Wear: WearCommand{},
 		},
 	}
 }
@@ -64,23 +64,23 @@ type WearCommand struct{}
 
 func (c WearCommand) Execute(args []string, p *player, locations *[]location) string {
 	if len(args) < 1 {
-		return "уточните, что надеть"
+		return WhatToWear
 	}
 	itemName := args[0]
 	return p.wearItem(itemName, locations)
 }
 
 func (p *player) wearItem(itemName string, locations *[]location) string {
-	if strings.ToLower(itemName) != "рюкзак" {
-		return "неизвестная команда"
+	if strings.ToLower(itemName) != ItemBackpack {
+		return ErrUnknownCommand
 	}
-	return p.takeItem("рюкзак", locations)
+	return p.takeItem(ItemBackpack, locations)
 }
 
 func (d *CommandDispatcher) Dispatch(line string, p *player, locations *[]location) string {
 	parts := strings.Fields(line)
 	if len(parts) == 0 {
-		return "введите команду"
+		return EnterCommand
 	}
 
 	cmdName := parts[0]
@@ -89,7 +89,7 @@ func (d *CommandDispatcher) Dispatch(line string, p *player, locations *[]locati
 	if cmd, ok := d.commands[cmdName]; ok {
 		return cmd.Execute(args, p, locations)
 	}
-	return "неизвестная команда"
+	return ErrUnknownCommand
 }
 
 type location struct {
@@ -219,10 +219,10 @@ func (p *player) move(target string, loc *[]location) string {
 
 func (p *player) takeItem(itemName string, loc *[]location) string {
 	// Специальная обработка для рюкзака
-	if itemName == "рюкзак" {
+	if itemName == ItemBackpack {
 		for objIdx := range p.place.objects {
 			for itemIdx, it := range p.place.objects[objIdx].items {
-				if it.title == "рюкзак" {
+				if it.title == ItemBackpack {
 					p.hasBackpack = true
 					p.inventory = append(p.inventory, it)
 					p.place.objects[objIdx].items = slices.Delete(
@@ -230,16 +230,16 @@ func (p *player) takeItem(itemName string, loc *[]location) string {
 						itemIdx,
 						itemIdx+1,
 					)
-					return "вы надели: рюкзак"
+					return YouWear + ItemBackpack
 				}
 			}
 		}
-		return "нет такого"
+		return ErrItemNotFound
 	}
 
 	// Для других предметов
 	if !p.hasBackpack {
-		return "некуда класть"
+		return ErrNoInventorySpace
 	}
 
 	for objIdx := range p.place.objects {
@@ -251,11 +251,11 @@ func (p *player) takeItem(itemName string, loc *[]location) string {
 					itemIdx,
 					itemIdx+1,
 				)
-				return "предмет добавлен в инвентарь: " + itemName
+				return ItemTaken + itemName
 			}
 		}
 	}
-	return "нет такого"
+	return ErrItemNotFound
 }
 
 func (p *player) useItem(itemName string, target string, loc *[]location) string {
@@ -268,66 +268,59 @@ func (p *player) useItem(itemName string, target string, loc *[]location) string
 		}
 	}
 	if !hasItem {
-		return "нет предмета в инвентаре - " + itemName
+		return ErrNoItemInInventory + itemName
 	}
 
 	// Обрабатываем применение ключей к двери
-	if itemName == "ключи" && target == "дверь" {
+	if itemName == ItemKeys && target == TargetDoor {
 		for i := range *loc {
-			if (*loc)[i].title == "улица" {
+			if (*loc)[i].title == LocationStreet {
 				(*loc)[i].locked = false
-				return "дверь открыта"
+				return DoorOpen
 			}
 		}
 	}
 
-	return "не к чему применить"
-}
-
-var items = []item{
-	{title: "чай"},
-	{title: "рюкзак"},
-	{title: "конспекты"},
-	{title: "ключи"},
+	return ErrNoObjectInLocation
 }
 
 var locations = []location{
 	{
-		title:  "кухня",
+		title:  LocationKitchen,
 		locked: false,
-		paths:  []string{"коридор"},
+		paths:  []string{LocationCorridor},
 		objects: []obj{
 			{
-				title: "столе",
-				items: []item{items[0]},
+				title: ObjTable,
+				items: []item{{title: ItemTea}},
 			},
 		},
 	},
 	{
-		title:   "коридор",
+		title:   LocationCorridor,
 		locked:  false,
-		paths:   []string{"кухня", "комната", "улица"},
+		paths:   []string{LocationKitchen, LocationRoom, LocationStreet},
 		objects: []obj{},
 	},
 	{
-		title:  "комната",
+		title:  LocationRoom,
 		locked: false,
-		paths:  []string{"коридор"},
+		paths:  []string{LocationCorridor},
 		objects: []obj{
 			{
-				title: "столе",
-				items: []item{items[3], items[2]},
+				title: ObjTable,
+				items: []item{{title: ItemKeys}, {title: ItemNotes}},
 			},
 			{
-				title: "стуле",
-				items: []item{items[1]},
+				title: ObjChair,
+				items: []item{{title: ItemBackpack}},
 			},
 		},
 	},
 	{
-		title:   "улица",
+		title:   LocationStreet,
 		locked:  true,
-		paths:   []string{"домой"},
+		paths:   []string{LocationHome},
 		objects: []obj{},
 	},
 }
@@ -335,7 +328,7 @@ var locations = []location{
 func (p *player) start(cmd []string, locations *[]location) string {
 	dispatcher := NewDispatcher()
 	if len(cmd) == 0 {
-		return "введите команду"
+		return EnterCommand
 	}
 	return dispatcher.Dispatch(strings.Join(cmd, " "), p, locations)
 }
