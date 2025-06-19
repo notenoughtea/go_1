@@ -5,6 +5,93 @@ import (
 	"strings"
 )
 
+type Command interface {
+	Execute(args []string, p *player, locations *[]location) string
+}
+
+type LookCommand struct{}
+
+func (c LookCommand) Execute(args []string, p *player, locations *[]location) string {
+	return p.look(locations)
+}
+
+type GoCommand struct{}
+
+func (c GoCommand) Execute(args []string, p *player, locations *[]location) string {
+	if len(args) < 1 {
+		return "уточните направление"
+	}
+	return p.move(args[0], locations)
+}
+
+type TakeCommand struct{}
+
+func (c TakeCommand) Execute(args []string, p *player, locations *[]location) string {
+	if len(args) < 1 {
+		return "уточните предмет"
+	}
+	return p.takeItem(args[0], locations)
+}
+
+type UseCommand struct{}
+
+func (c UseCommand) Execute(args []string, p *player, locations *[]location) string {
+	if len(args) < 2 {
+		return "уточните, что и к чему применить"
+	}
+	itemName := args[0]
+	target := strings.Join(args[1:], " ")
+	return p.useItem(itemName, target, locations)
+}
+
+type CommandDispatcher struct {
+	commands map[string]Command
+}
+
+func NewDispatcher() *CommandDispatcher {
+	return &CommandDispatcher{
+		commands: map[string]Command{
+			"осмотреться": LookCommand{},
+			"идти":        GoCommand{},
+			"взять":       TakeCommand{},
+			"применить":   UseCommand{},
+			"надеть":      WearCommand{},
+		},
+	}
+}
+
+type WearCommand struct{}
+
+func (c WearCommand) Execute(args []string, p *player, locations *[]location) string {
+	if len(args) < 1 {
+		return "уточните, что надеть"
+	}
+	itemName := args[0]
+	return p.wearItem(itemName, locations)
+}
+
+func (p *player) wearItem(itemName string, locations *[]location) string {
+	if strings.ToLower(itemName) != "рюкзак" {
+		return "неизвестная команда"
+	}
+	return p.takeItem("рюкзак", locations)
+}
+
+func (d *CommandDispatcher) Dispatch(line string, p *player, locations *[]location) string {
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return "введите команду"
+	}
+
+	cmdName := parts[0]
+	args := parts[1:]
+
+	if cmd, ok := d.commands[cmdName]; ok {
+		return cmd.Execute(args, p, locations)
+	}
+	return "неизвестная команда"
+}
+
 type location struct {
 	title   string
 	locked  bool
@@ -125,6 +212,11 @@ func (p *player) move(target string, loc *[]location) string {
 	}
 }
 
+// store other items. If the backpack is not equipped, other items
+// cannot be taken. If the item is successfully taken, a success message
+// is returned. If the item is not found or cannot be taken, an appropriate
+// message is returned.
+
 func (p *player) takeItem(itemName string, loc *[]location) string {
 	// Специальная обработка для рюкзака
 	if itemName == "рюкзак" {
@@ -192,14 +284,6 @@ func (p *player) useItem(itemName string, target string, loc *[]location) string
 	return "не к чему применить"
 }
 
-func parseCommand(command string) []string {
-	parts := strings.Split(command, " ")
-	if len(parts) >= 3 {
-		return []string{parts[0], parts[1], strings.Join(parts[2:], " ")}
-	}
-	return parts
-}
-
 var items = []item{
 	{title: "чай"},
 	{title: "рюкзак"},
@@ -248,40 +332,12 @@ var locations = []location{
 	},
 }
 
-func (p *player) start(command []string, locations *[]location) string {
-	if len(command) == 0 {
-		return "неизвестная команда"
+func (p *player) start(cmd []string, locations *[]location) string {
+	dispatcher := NewDispatcher()
+	if len(cmd) == 0 {
+		return "введите команду"
 	}
-
-	switch command[0] {
-	case "осмотреться":
-		return p.look(locations)
-	case "идти":
-		if len(command) < 2 {
-			return "укажите куда идти"
-		}
-		return p.move(command[1], locations)
-	case "взять":
-		if len(command) < 2 {
-			return "укажите что взять"
-		}
-		return p.takeItem(command[1], locations)
-	case "надеть":
-		if len(command) < 2 {
-			return "укажите что надеть"
-		}
-		if command[1] == "рюкзак" {
-			return p.takeItem("рюкзак", locations)
-		}
-		return "неизвестная команда"
-	case "применить":
-		if len(command) < 3 {
-			return "укажите что и куда применить"
-		}
-		return p.useItem(command[1], command[2], locations)
-	default:
-		return "неизвестная команда"
-	}
+	return dispatcher.Dispatch(strings.Join(cmd, " "), p, locations)
 }
 
 func initGame(cases []string) []string {
@@ -314,7 +370,8 @@ func initGame(cases []string) []string {
 	var result []string
 
 	for _, c := range cases {
-		result = append(result, hero.start(parseCommand(c), &locationsCopy))
+		result = append(result, hero.start(strings.Fields(c), &locationsCopy))
 	}
+
 	return result
 }
