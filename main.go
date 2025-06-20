@@ -29,6 +29,16 @@ func loadConfig(path string) {
 	}
 }
 
+func beautify(text string) string {
+	if text == "" {
+		return ""
+	}
+	if !strings.HasSuffix(text, ".") {
+		text += "."
+	}
+	return strings.ToUpper(text[:1]) + text[1:]
+}
+
 func loadLocations(filename string) []location {
 	data, err := os.ReadFile(filename)
 	if err != nil {
@@ -43,103 +53,23 @@ func loadLocations(filename string) []location {
 	return locs
 }
 
-type Command interface {
-	Execute(args []string, p *player, locations *[]location) string
-}
-
-type LookCommand struct{}
-
-func (c LookCommand) Execute(args []string, p *player, locations *[]location) string {
-	return p.look(locations)
-}
-
-type GoCommand struct{}
-
-func (c GoCommand) Execute(args []string, p *player, locations *[]location) string {
-	if len(args) < 1 {
-		return config.Messages["what_direction"]
-	}
-	return p.move(args[0], locations)
-}
-
-type TakeCommand struct{}
-
-func (c TakeCommand) Execute(args []string, p *player, locations *[]location) string {
-	if len(args) < 1 {
-		return config.Messages["what_item"]
-	}
-	return p.takeItem(args[0], locations)
-}
-
-type UseCommand struct{}
-
-func (c UseCommand) Execute(args []string, p *player, locations *[]location) string {
-	if len(args) < 2 {
-		return config.Messages["what_to_use"]
-	}
-	itemName := args[0]
-	target := strings.Join(args[1:], " ")
-	return p.useItem(itemName, target, locations)
-}
-
-type WearCommand struct{}
-
-func (c WearCommand) Execute(args []string, p *player, locations *[]location) string {
-	if len(args) < 1 {
-		return config.Messages["what_to_wear"]
-	}
-	itemName := args[0]
-	return p.wearItem(itemName, locations)
-}
-
-type CommandDispatcher struct {
-	commands map[string]Command
-}
-
-func NewDispatcher() *CommandDispatcher {
-	return &CommandDispatcher{
-		commands: map[string]Command{
-			config.Commands["look"]: LookCommand{},
-			config.Commands["go"]:   GoCommand{},
-			config.Commands["take"]: TakeCommand{},
-			config.Commands["use"]:  UseCommand{},
-			config.Commands["wear"]: WearCommand{},
-		},
-	}
-}
-
-func (d *CommandDispatcher) Dispatch(line string, p *player, locations *[]location) string {
-	parts := strings.Fields(line)
-	if len(parts) == 0 {
-		return config.Messages["enter_command"]
-	}
-
-	cmdName := parts[0]
-	args := parts[1:]
-
-	if cmd, ok := d.commands[cmdName]; ok {
-		return cmd.Execute(args, p, locations)
-	}
-	return config.Errors["unknown_command"]
-}
-
 type location struct {
-	title         string
-	locked        bool
-	description   string
-	welcome       string
-	noItemMessage string
-	paths         []string
-	objects       []obj
+	title         string   `json:"title"`
+	locked        bool     `json:"locked"`
+	description   string   `json:"description"`
+	welcome       string   `json:"welcome"`
+	noItemMessage string   `json:"noItemMessage"`
+	paths         []string `json:"paths"`
+	objects       []obj    `json:"objects"`
 }
 
 type obj struct {
-	title string
-	items []item
+	title string `json:"title"`
+	items []item `json:"items"`
 }
 
 type item struct {
-	title string
+	title string `json:"title"`
 }
 
 type player struct {
@@ -149,79 +79,101 @@ type player struct {
 	seenLocations map[string]bool
 }
 
-func (p *player) move(target string, locs *[]location) string {
-	var neededLocation *location
-	for i := range *locs {
-		if (*locs)[i].title == target {
-			neededLocation = &(*locs)[i]
-			break
+func (p *player) hasItem(name string) bool {
+	for _, i := range p.inventory {
+		if i.title == name {
+			return true
 		}
 	}
+	return false
+}
+
+func (p *player) listInventory() string {
+	if len(p.inventory) == 0 {
+		return config.Messages["inventory_empty"]
+	}
+	names := []string{}
+	for _, it := range p.inventory {
+		names = append(names, it.title)
+	}
+	return config.Messages["inventory_list"] + ": " + strings.Join(names, ", ")
+}
+
+func findLocationByTitle(title string, locs *[]location) *location {
+	for i := range *locs {
+		if (*locs)[i].title == title {
+			return &(*locs)[i]
+		}
+	}
+	return nil
+}
+
+func (p *player) move(target string, locs *[]location) string {
+	neededLocation := findLocationByTitle(target, locs)
 	if neededLocation == nil || !slices.Contains(p.place.paths, target) {
-		return config.Errors["no_path"] + target
+		return beautify(config.Errors["no_path"] + target)
 	}
 	if neededLocation.locked {
-		return config.Errors["door_closed"]
+		return beautify(config.Errors["door_closed"])
 	}
-
 	p.place = neededLocation
-	return neededLocation.description + ". " + findPaths(neededLocation)
+	return beautify(p.place.welcome) + " " + findPaths(neededLocation)
 }
 
 func (p *player) takeItem(itemName string, loc *[]location) string {
-	if itemName == config.Items["backpack"] {
+	special := map[string]func(*player, string, *[]location) string{
+		config.Items["backpack"]: func(p *player, itemName string, loc *[]location) string {
+			p.hasBackpack = true
+			return beautify(config.Messages["you_wear"] + itemName)
+		},
+	}
+	if fn, ok := special[itemName]; ok {
 		for objIdx := range p.place.objects {
 			for itemIdx, it := range p.place.objects[objIdx].items {
 				if it.title == itemName {
-					p.hasBackpack = true
-					p.inventory = append(p.inventory, it)
 					p.place.objects[objIdx].items = slices.Delete(p.place.objects[objIdx].items, itemIdx, itemIdx+1)
-					return config.Messages["you_wear"] + itemName
+					return fn(p, itemName, loc)
 				}
 			}
 		}
-		return config.Errors["item_not_found"]
+		return beautify(config.Errors["item_not_found"])
 	}
+	return p.takeItemNormally(itemName, loc)
+}
+
+func (p *player) takeItemNormally(itemName string, loc *[]location) string {
 	if !p.hasBackpack {
-		return config.Errors["no_inventory"]
+		return beautify(config.Errors["no_inventory"])
 	}
 	for objIdx := range p.place.objects {
 		for itemIdx, it := range p.place.objects[objIdx].items {
 			if it.title == itemName {
 				p.inventory = append(p.inventory, it)
 				p.place.objects[objIdx].items = slices.Delete(p.place.objects[objIdx].items, itemIdx, itemIdx+1)
-				return config.Messages["item_taken"] + itemName
+				return beautify(config.Messages["item_taken"] + itemName)
 			}
 		}
 	}
-	return config.Errors["item_not_found"]
+	return beautify(config.Errors["item_not_found"])
 }
 
 func (p *player) useItem(itemName string, target string, loc *[]location) string {
-	hasItem := false
-	for _, it := range p.inventory {
-		if it.title == itemName {
-			hasItem = true
-			break
-		}
-	}
-	if !hasItem {
-		return config.Errors["no_item_in_inventory"] + itemName
+	if !p.hasItem(itemName) {
+		return beautify(config.Errors["no_item_in_inventory"] + itemName)
 	}
 	if itemName == config.Items["keys"] && target == config.Targets["door"] {
-		for i := range *loc {
-			if (*loc)[i].title == config.Places["street"] {
-				(*loc)[i].locked = false
-				return config.Messages["door_open"]
-			}
+		street := findLocationByTitle(config.Places["street"], loc)
+		if street != nil {
+			street.locked = false
+			return beautify(config.Messages["door_open"])
 		}
 	}
-	return config.Errors["no_object_in_location"]
+	return beautify(config.Errors["no_object_in_location"])
 }
 
 func (p *player) wearItem(itemName string, locations *[]location) string {
 	if strings.ToLower(itemName) != config.Items["backpack"] {
-		return config.Errors["unknown_command"]
+		return beautify(config.Errors["unknown_command"])
 	}
 	return p.takeItem(config.Items["backpack"], locations)
 }
@@ -229,7 +181,6 @@ func (p *player) wearItem(itemName string, locations *[]location) string {
 func (p *player) look(loc *[]location) string {
 	itemsDesc := findObjectItems(p.place)
 	pathsDesc := findPaths(p.place)
-
 	locTitle := p.place.title
 	var result string
 	if !p.seenLocations[locTitle] {
@@ -247,7 +198,7 @@ func (p *player) look(loc *[]location) string {
 		}
 	}
 	result += ". " + pathsDesc
-	return result
+	return beautify(result)
 }
 
 func findPaths(loc *location) string {
@@ -281,10 +232,88 @@ func findObjectItems(loc *location) string {
 	return strings.Join(items, ", ")
 }
 
+type Command interface {
+	Execute(args []string, p *player, locations *[]location) string
+}
+
+type LookCommand struct{}
+
+func (c LookCommand) Execute(args []string, p *player, locations *[]location) string {
+	return p.look(locations)
+}
+
+type GoCommand struct{}
+
+func (c GoCommand) Execute(args []string, p *player, locations *[]location) string {
+	if len(args) < 1 {
+		return beautify(config.Messages["what_direction"])
+	}
+	return p.move(args[0], locations)
+}
+
+type TakeCommand struct{}
+
+func (c TakeCommand) Execute(args []string, p *player, locations *[]location) string {
+	if len(args) < 1 {
+		return beautify(config.Messages["what_item"])
+	}
+	return p.takeItem(args[0], locations)
+}
+
+type UseCommand struct{}
+
+func (c UseCommand) Execute(args []string, p *player, locations *[]location) string {
+	if len(args) < 2 {
+		return beautify(config.Messages["what_to_use"])
+	}
+	itemName := args[0]
+	target := strings.Join(args[1:], " ")
+	return p.useItem(itemName, target, locations)
+}
+
+type WearCommand struct{}
+
+func (c WearCommand) Execute(args []string, p *player, locations *[]location) string {
+	if len(args) < 1 {
+		return beautify(config.Messages["what_to_wear"])
+	}
+	itemName := args[0]
+	return p.wearItem(itemName, locations)
+}
+
+type CommandDispatcher struct {
+	commands map[string]Command
+}
+
+func NewDispatcher() *CommandDispatcher {
+	return &CommandDispatcher{
+		commands: map[string]Command{
+			config.Commands["look"]: LookCommand{},
+			config.Commands["go"]:   GoCommand{},
+			config.Commands["take"]: TakeCommand{},
+			config.Commands["use"]:  UseCommand{},
+			config.Commands["wear"]: WearCommand{},
+		},
+	}
+}
+
+func (d *CommandDispatcher) Dispatch(line string, p *player, locations *[]location) string {
+	parts := strings.Fields(line)
+	if len(parts) == 0 {
+		return beautify(config.Messages["enter_command"])
+	}
+	cmdName := parts[0]
+	args := parts[1:]
+	if cmd, ok := d.commands[cmdName]; ok {
+		return cmd.Execute(args, p, locations)
+	}
+	return beautify(config.Errors["unknown_command"])
+}
+
 func (p *player) start(cmd []string, locations *[]location) string {
 	dispatcher := NewDispatcher()
 	if len(cmd) == 0 {
-		return config.Messages["enter_command"]
+		return beautify(config.Messages["enter_command"])
 	}
 	return dispatcher.Dispatch(strings.Join(cmd, " "), p, locations)
 }
