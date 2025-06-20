@@ -1,9 +1,47 @@
 package main
 
 import (
+	"encoding/json"
+	"log"
+	"os"
 	"slices"
 	"strings"
 )
+
+type GameConfig struct {
+	Errors   map[string]string `json:"errors"`
+	Messages map[string]string `json:"messages"`
+	Commands map[string]string `json:"commands"`
+	Items    map[string]string `json:"items"`
+	Targets  map[string]string `json:"targets"`
+	Places   map[string]string `json:"places"`
+}
+
+var config GameConfig
+
+func loadConfig(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Fatalf("ошибка загрузки config.json: %v", err)
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		log.Fatalf("ошибка разбора config.json: %v", err)
+	}
+}
+
+func loadLocations(filename string) []location {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		log.Fatalf("Ошибка при чтении %s: %v", filename, err)
+	}
+
+	var locs []location
+	if err := json.Unmarshal(data, &locs); err != nil {
+		log.Fatalf("Ошибка при парсинге JSON: %v", err)
+	}
+
+	return locs
+}
 
 type Command interface {
 	Execute(args []string, p *player, locations *[]location) string
@@ -19,7 +57,7 @@ type GoCommand struct{}
 
 func (c GoCommand) Execute(args []string, p *player, locations *[]location) string {
 	if len(args) < 1 {
-		return WhatDirection
+		return config.Messages["what_direction"]
 	}
 	return p.move(args[0], locations)
 }
@@ -28,7 +66,7 @@ type TakeCommand struct{}
 
 func (c TakeCommand) Execute(args []string, p *player, locations *[]location) string {
 	if len(args) < 1 {
-		return WhatItem
+		return config.Messages["what_item"]
 	}
 	return p.takeItem(args[0], locations)
 }
@@ -37,11 +75,21 @@ type UseCommand struct{}
 
 func (c UseCommand) Execute(args []string, p *player, locations *[]location) string {
 	if len(args) < 2 {
-		return WhatToUse
+		return config.Messages["what_to_use"]
 	}
 	itemName := args[0]
 	target := strings.Join(args[1:], " ")
 	return p.useItem(itemName, target, locations)
+}
+
+type WearCommand struct{}
+
+func (c WearCommand) Execute(args []string, p *player, locations *[]location) string {
+	if len(args) < 1 {
+		return config.Messages["what_to_wear"]
+	}
+	itemName := args[0]
+	return p.wearItem(itemName, locations)
 }
 
 type CommandDispatcher struct {
@@ -51,36 +99,19 @@ type CommandDispatcher struct {
 func NewDispatcher() *CommandDispatcher {
 	return &CommandDispatcher{
 		commands: map[string]Command{
-			Look: LookCommand{},
-			Go:   GoCommand{},
-			Take: TakeCommand{},
-			Use:  UseCommand{},
-			Wear: WearCommand{},
+			config.Commands["look"]: LookCommand{},
+			config.Commands["go"]:   GoCommand{},
+			config.Commands["take"]: TakeCommand{},
+			config.Commands["use"]:  UseCommand{},
+			config.Commands["wear"]: WearCommand{},
 		},
 	}
-}
-
-type WearCommand struct{}
-
-func (c WearCommand) Execute(args []string, p *player, locations *[]location) string {
-	if len(args) < 1 {
-		return WhatToWear
-	}
-	itemName := args[0]
-	return p.wearItem(itemName, locations)
-}
-
-func (p *player) wearItem(itemName string, locations *[]location) string {
-	if strings.ToLower(itemName) != ItemBackpack {
-		return ErrUnknownCommand
-	}
-	return p.takeItem(ItemBackpack, locations)
 }
 
 func (d *CommandDispatcher) Dispatch(line string, p *player, locations *[]location) string {
 	parts := strings.Fields(line)
 	if len(parts) == 0 {
-		return EnterCommand
+		return config.Messages["enter_command"]
 	}
 
 	cmdName := parts[0]
@@ -89,14 +120,17 @@ func (d *CommandDispatcher) Dispatch(line string, p *player, locations *[]locati
 	if cmd, ok := d.commands[cmdName]; ok {
 		return cmd.Execute(args, p, locations)
 	}
-	return ErrUnknownCommand
+	return config.Errors["unknown_command"]
 }
 
 type location struct {
-	title   string
-	locked  bool
-	paths   []string
-	objects []obj
+	title         string
+	locked        bool
+	description   string
+	welcome       string
+	noItemMessage string
+	paths         []string
+	objects       []obj
 }
 
 type obj struct {
@@ -104,21 +138,123 @@ type obj struct {
 	items []item
 }
 
-type player struct {
-	place       *location
-	hasBackpack bool
-	inventory   []item
-}
-
 type item struct {
 	title string
+}
+
+type player struct {
+	place         *location
+	hasBackpack   bool
+	inventory     []item
+	seenLocations map[string]bool
+}
+
+func (p *player) move(target string, locs *[]location) string {
+	var neededLocation *location
+	for i := range *locs {
+		if (*locs)[i].title == target {
+			neededLocation = &(*locs)[i]
+			break
+		}
+	}
+	if neededLocation == nil || !slices.Contains(p.place.paths, target) {
+		return config.Errors["no_path"] + target
+	}
+	if neededLocation.locked {
+		return config.Errors["door_closed"]
+	}
+
+	p.place = neededLocation
+	return neededLocation.description + ". " + findPaths(neededLocation)
+}
+
+func (p *player) takeItem(itemName string, loc *[]location) string {
+	if itemName == config.Items["backpack"] {
+		for objIdx := range p.place.objects {
+			for itemIdx, it := range p.place.objects[objIdx].items {
+				if it.title == itemName {
+					p.hasBackpack = true
+					p.inventory = append(p.inventory, it)
+					p.place.objects[objIdx].items = slices.Delete(p.place.objects[objIdx].items, itemIdx, itemIdx+1)
+					return config.Messages["you_wear"] + itemName
+				}
+			}
+		}
+		return config.Errors["item_not_found"]
+	}
+	if !p.hasBackpack {
+		return config.Errors["no_inventory"]
+	}
+	for objIdx := range p.place.objects {
+		for itemIdx, it := range p.place.objects[objIdx].items {
+			if it.title == itemName {
+				p.inventory = append(p.inventory, it)
+				p.place.objects[objIdx].items = slices.Delete(p.place.objects[objIdx].items, itemIdx, itemIdx+1)
+				return config.Messages["item_taken"] + itemName
+			}
+		}
+	}
+	return config.Errors["item_not_found"]
+}
+
+func (p *player) useItem(itemName string, target string, loc *[]location) string {
+	hasItem := false
+	for _, it := range p.inventory {
+		if it.title == itemName {
+			hasItem = true
+			break
+		}
+	}
+	if !hasItem {
+		return config.Errors["no_item_in_inventory"] + itemName
+	}
+	if itemName == config.Items["keys"] && target == config.Targets["door"] {
+		for i := range *loc {
+			if (*loc)[i].title == config.Places["street"] {
+				(*loc)[i].locked = false
+				return config.Messages["door_open"]
+			}
+		}
+	}
+	return config.Errors["no_object_in_location"]
+}
+
+func (p *player) wearItem(itemName string, locations *[]location) string {
+	if strings.ToLower(itemName) != config.Items["backpack"] {
+		return config.Errors["unknown_command"]
+	}
+	return p.takeItem(config.Items["backpack"], locations)
+}
+
+func (p *player) look(loc *[]location) string {
+	itemsDesc := findObjectItems(p.place)
+	pathsDesc := findPaths(p.place)
+
+	locTitle := p.place.title
+	var result string
+	if !p.seenLocations[locTitle] {
+		if p.place.welcome != "" {
+			result += p.place.welcome
+		} else {
+			result += p.place.description
+		}
+		p.seenLocations[locTitle] = true
+	} else {
+		if itemsDesc == "" {
+			result += p.place.noItemMessage
+		} else {
+			result += itemsDesc
+		}
+	}
+	result += ". " + pathsDesc
+	return result
 }
 
 func findPaths(loc *location) string {
 	if len(loc.paths) == 0 {
 		return ""
 	}
-	result := "можно пройти - "
+	result := config.Messages["can_go"]
 	for n, path := range loc.paths {
 		if n > 0 {
 			result += ", "
@@ -139,232 +275,56 @@ func findObjectItems(loc *location) string {
 				}
 				itemList += item.title
 			}
-			items = append(items, "на "+obj.title+": "+itemList)
+			items = append(items, obj.title+": "+itemList)
 		}
 	}
 	return strings.Join(items, ", ")
 }
 
-func (p *player) look(loc *[]location) string {
-	itemsDesc := findObjectItems(p.place)
-	pathsDesc := findPaths(p.place)
-
-	switch p.place.title {
-	case "кухня":
-		answer := "ты находишься на кухне"
-		if itemsDesc != "" {
-			answer += ", " + itemsDesc
-		}
-		if p.hasBackpack {
-			answer += ", надо идти в универ. "
-		} else {
-			answer += ", надо собрать рюкзак и идти в универ. "
-		}
-		answer += pathsDesc
-		return answer
-
-	case "комната":
-		if itemsDesc == "" {
-			return "пустая комната. " + pathsDesc
-		}
-		return itemsDesc + ". " + pathsDesc
-
-	default:
-		answer := "ты находишься на " + p.place.title
-		if itemsDesc != "" {
-			answer += ", " + itemsDesc
-		}
-		answer += ". " + pathsDesc
-		return answer
-	}
-}
-
-func (p *player) move(target string, loc *[]location) string {
-	var neededLocation *location
-	for i := range *loc {
-		if target == (*loc)[i].title {
-			neededLocation = &(*loc)[i]
-			break
-		}
-	}
-	if neededLocation == nil {
-		return "нет пути в " + target
-	}
-	if neededLocation.locked {
-		return "дверь закрыта"
-	}
-	if !slices.Contains(p.place.paths, target) {
-		return "нет пути в " + target
-	}
-
-	p.place = neededLocation
-	switch neededLocation.title {
-	case "улица":
-		return "на улице весна. можно пройти - домой"
-	case "кухня":
-		return "кухня, ничего интересного. " + findPaths(neededLocation)
-	case "коридор":
-		return "ничего интересного. " + findPaths(neededLocation)
-	case "комната":
-		return "ты в своей комнате. " + findPaths(neededLocation)
-	default:
-		return findPaths(neededLocation)
-	}
-}
-
-// store other items. If the backpack is not equipped, other items
-// cannot be taken. If the item is successfully taken, a success message
-// is returned. If the item is not found or cannot be taken, an appropriate
-// message is returned.
-
-func (p *player) takeItem(itemName string, loc *[]location) string {
-	// Специальная обработка для рюкзака
-	if itemName == ItemBackpack {
-		for objIdx := range p.place.objects {
-			for itemIdx, it := range p.place.objects[objIdx].items {
-				if it.title == ItemBackpack {
-					p.hasBackpack = true
-					p.inventory = append(p.inventory, it)
-					p.place.objects[objIdx].items = slices.Delete(
-						p.place.objects[objIdx].items,
-						itemIdx,
-						itemIdx+1,
-					)
-					return YouWear + ItemBackpack
-				}
-			}
-		}
-		return ErrItemNotFound
-	}
-
-	// Для других предметов
-	if !p.hasBackpack {
-		return ErrNoInventorySpace
-	}
-
-	for objIdx := range p.place.objects {
-		for itemIdx, it := range p.place.objects[objIdx].items {
-			if it.title == itemName {
-				p.inventory = append(p.inventory, it)
-				p.place.objects[objIdx].items = slices.Delete(
-					p.place.objects[objIdx].items,
-					itemIdx,
-					itemIdx+1,
-				)
-				return ItemTaken + itemName
-			}
-		}
-	}
-	return ErrItemNotFound
-}
-
-func (p *player) useItem(itemName string, target string, loc *[]location) string {
-	// Проверяем есть ли предмет в инвентаре
-	hasItem := false
-	for _, it := range p.inventory {
-		if it.title == itemName {
-			hasItem = true
-			break
-		}
-	}
-	if !hasItem {
-		return ErrNoItemInInventory + itemName
-	}
-
-	// Обрабатываем применение ключей к двери
-	if itemName == ItemKeys && target == TargetDoor {
-		for i := range *loc {
-			if (*loc)[i].title == LocationStreet {
-				(*loc)[i].locked = false
-				return DoorOpen
-			}
-		}
-	}
-
-	return ErrNoObjectInLocation
-}
-
-var locations = []location{
-	{
-		title:  LocationKitchen,
-		locked: false,
-		paths:  []string{LocationCorridor},
-		objects: []obj{
-			{
-				title: ObjTable,
-				items: []item{{title: ItemTea}},
-			},
-		},
-	},
-	{
-		title:   LocationCorridor,
-		locked:  false,
-		paths:   []string{LocationKitchen, LocationRoom, LocationStreet},
-		objects: []obj{},
-	},
-	{
-		title:  LocationRoom,
-		locked: false,
-		paths:  []string{LocationCorridor},
-		objects: []obj{
-			{
-				title: ObjTable,
-				items: []item{{title: ItemKeys}, {title: ItemNotes}},
-			},
-			{
-				title: ObjChair,
-				items: []item{{title: ItemBackpack}},
-			},
-		},
-	},
-	{
-		title:   LocationStreet,
-		locked:  true,
-		paths:   []string{LocationHome},
-		objects: []obj{},
-	},
-}
-
 func (p *player) start(cmd []string, locations *[]location) string {
 	dispatcher := NewDispatcher()
 	if len(cmd) == 0 {
-		return EnterCommand
+		return config.Messages["enter_command"]
 	}
 	return dispatcher.Dispatch(strings.Join(cmd, " "), p, locations)
 }
 
 func initGame(cases []string) []string {
-	// Создаем копию локаций для каждого теста
-	locationsCopy := make([]location, len(locations))
-	for i := range locations {
-		objectsCopy := make([]obj, len(locations[i].objects))
-		for j := range locations[i].objects {
-			itemsCopy := make([]item, len(locations[i].objects[j].items))
-			copy(itemsCopy, locations[i].objects[j].items)
+	loadConfig("config.json")
+	originalLocations := loadLocations("locations.json")
+	locationsCopy := make([]location, len(originalLocations))
+	for i := range originalLocations {
+		objectsCopy := make([]obj, len(originalLocations[i].objects))
+		for j := range originalLocations[i].objects {
+			itemsCopy := make([]item, len(originalLocations[i].objects[j].items))
+			copy(itemsCopy, originalLocations[i].objects[j].items)
 			objectsCopy[j] = obj{
-				title: locations[i].objects[j].title,
+				title: originalLocations[i].objects[j].title,
 				items: itemsCopy,
 			}
 		}
-		pathsCopy := make([]string, len(locations[i].paths))
-		copy(pathsCopy, locations[i].paths)
+		pathsCopy := make([]string, len(originalLocations[i].paths))
+		copy(pathsCopy, originalLocations[i].paths)
 		locationsCopy[i] = location{
-			title:   locations[i].title,
-			locked:  locations[i].locked,
-			paths:   pathsCopy,
-			objects: objectsCopy,
+			title:         originalLocations[i].title,
+			locked:        originalLocations[i].locked,
+			description:   originalLocations[i].description,
+			welcome:       originalLocations[i].welcome,
+			noItemMessage: originalLocations[i].noItemMessage,
+			paths:         pathsCopy,
+			objects:       objectsCopy,
 		}
 	}
 
-	var hero = &player{
-		place:       &locationsCopy[0], // Начинаем на кухне
-		hasBackpack: false,
+	hero := &player{
+		place:         &locationsCopy[0],
+		hasBackpack:   false,
+		seenLocations: make(map[string]bool),
 	}
-	var result []string
 
+	var result []string
 	for _, c := range cases {
 		result = append(result, hero.start(strings.Fields(c), &locationsCopy))
 	}
-
 	return result
 }

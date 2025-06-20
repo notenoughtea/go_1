@@ -1,0 +1,45 @@
+{
+  "commands": {
+    "look": "осмотреться",
+    "go": "идти",
+    "take": "взять",
+    "use": "применить",
+    "wear": "надеть"
+  },
+  "items": {
+    "backpack": "рюкзак",
+    "keys": "ключи",
+    "notes": "конспекты",
+    "tea": "чай"
+  },
+  "targets": {
+    "door": "дверь"
+  },
+  "places": {
+    "street": "улица",
+    "kitchen": "кухня",
+    "corridor": "коридор",
+    "room": "комната",
+    "home": "домой"
+  },
+  "errors": {
+    "unknown_command": "неизвестная команда",
+    "no_path": "нет пути в ",
+    "door_closed": "дверь закрыта",
+    "item_not_found": "нет такого",
+    "no_inventory": "некуда класть",
+    "no_item_in_inventory": "нет предмета в инвентаре - ",
+    "no_object_in_location": "не к чему применить"
+  },
+  "messages": {
+    "what_to_use": "уточните, что и к чему применить",
+    "what_direction": "уточните направление",
+    "what_item": "уточните предмет",
+    "what_to_wear": "уточните, что надеть",
+    "enter_command": "введите команду",
+    "door_open": "дверь открыта",
+    "you_wear": "вы надели: ",
+    "item_taken": "предмет добавлен в инвентарь: ",
+    "can_go": "можно пройти - "
+  }
+}
