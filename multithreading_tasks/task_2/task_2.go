@@ -9,6 +9,25 @@
 
 package main
 
-func main() {
+import (
+	"fmt"
+	"sync"
+)
 
+func main() {
+	wg := sync.WaitGroup{}
+
+	for i := 1; i < 6; i++ {
+		wg.Add(1)
+		go func(d int) {
+			fmt.Println(d)
+			wg.Done()
+		}(i)
+	}
+
+	wg.Wait()
 }
+
+// Ответ:
+// Последовательно можно вывести без горутин или с использование канала
+// Чем меньше GOMAXPROCS, тем меньше горутин будут работать одновременно
